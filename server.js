@@ -54,14 +54,13 @@ app.post('/api/process', async (req, res) => {
                 .on('end', resolve).on('error', reject);
         });
 
-        // 3. Send to Whisper AI (Requesting SRT format)
+        // 3. Send to Whisper AI
         const transcription = await openai.audio.transcriptions.create({
             file: fs.createReadStream(audioPath),
             model: "whisper-1",
             response_format: "srt"
         });
         
-        // Save the SRT file
         fs.writeFileSync(srtPath, transcription);
 
         await sendMsg("✂️ *Phase 3:* Subtitles generated. Burning text and cropping to 9:16 vertical...");
@@ -69,7 +68,6 @@ app.post('/api/process', async (req, res) => {
         // 4. Process Video: Crop + Burn Subtitles
         await new Promise((resolve, reject) => {
             ffmpeg(inputPath)
-                // Crop to 9:16 AND burn the generated SRT file
                 .videoFilters([
                     'crop=ih*(9/16):ih',
                     `subtitles=${srtPath}:force_style='Alignment=2,Fontsize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2'`
@@ -92,11 +90,24 @@ app.post('/api/process', async (req, res) => {
         await axios.post(`https://api.telegram.org/bot${botToken}/sendVideo`, formData, { headers: formData.getHeaders() });
 
         // 6. Memory Cleanup
-        [inputPath, audioPath, srtPath, outputPath].forEach(file => fs.unlinkSync(file));
+        [inputPath, audioPath, srtPath, outputPath].forEach(file => {
+            if (fs.existsSync(file)) fs.unlinkSync(file);
+        });
 
     } catch (error) {
-        console.error(error);
-        await sendMsg("⚠️ *Engine Error:* The Whisper AI or Rendering Matrix failed. Ensure the video contains clear audio.");
+        console.error("CRITICAL ENGINE ERROR:", error);
+        
+        // Advanced Error Extraction Logic
+        let errorDetails = "Unknown crash in processing matrix.";
+        if (error.response && error.response.data && error.response.data.error) {
+            // Catches OpenAI API billing/key errors
+            errorDetails = `OpenAI API Rejection: ${error.response.data.error.message}`;
+        } else if (error.message) {
+            // Catches general Node.js or FFmpeg errors
+            errorDetails = error.message;
+        }
+
+        await sendMsg(`⚠️ *Engine Error Diagnostics:*\n\n\`${errorDetails}\`\n\n_Check API keys, OpenAI billing quota, or ensure the file isn't corrupted._`);
     }
 });
 
